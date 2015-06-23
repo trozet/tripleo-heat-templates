@@ -21,6 +21,8 @@ if count(hiera('ntp::servers')) > 0 {
   include ::ntp
 }
 
+$controller_node_ips = split(hiera('controller_node_ips'), ',')
+
 file { ['/etc/libvirt/qemu/networks/autostart/default.xml',
         '/etc/libvirt/qemu/networks/default.xml']:
   ensure => absent,
@@ -74,9 +76,25 @@ class { 'neutron::plugins::ml2':
   tenant_network_types => [hiera('neutron_tenant_network_type')],
 }
 
-class { 'neutron::agents::ml2::ovs':
-  bridge_mappings => split(hiera('neutron_bridge_mappings'), ','),
-  tunnel_types    => split(hiera('neutron_tunnel_types'), ','),
+if str2bool(hiera('enable_opendaylight', 'false')) {
+  $private_ip = hiera('neutron::agents::ml2::ovs::local_ip')
+
+  # OVS manager
+  exec { 'Set OVS Manager to OpenDaylight':
+    command => "/usr/bin/ovs-vsctl set-manager tcp:${controller_node_ips[0]}:6640",
+    unless  => "/usr/bin/ovs-vsctl show | /usr/bin/grep 'Manager \"tcp:${controller_node_ips[0]}:6640\"'",
+  }
+  # local ip
+  exec { 'Set local_ip Other Option':
+    command => "/usr/bin/ovs-vsctl set Open_vSwitch $(ovs-vsctl get Open_vSwitch . _uuid) other_config:local_ip=$private_ip",
+    unless  => "/usr/bin/ovs-vsctl list Open_vSwitch | /usr/bin/grep 'local_ip=\"$private_ip\"'",
+  }
+
+} else {
+  class { 'neutron::agents::ml2::ovs':
+    bridge_mappings => split(hiera('neutron_bridge_mappings'), ','),
+    tunnel_types    => split(hiera('neutron_tunnel_types'), ','),
+  }
 }
 
 if 'cisco_n1kv' in hiera('neutron_mechanism_drivers') {

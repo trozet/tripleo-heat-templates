@@ -37,6 +37,10 @@ parameters:
     default: ''
     description: Set to True to enable debugging on all services.
     type: string
+  EnableOpenDaylight:
+    default: false
+    description: Whether to enable Opendaylight Controller
+    type: boolean
   ExtraConfig:
     default: {}
     description: |
@@ -404,6 +408,7 @@ resources:
                 snmpd_readonly_user_name: {get_input: snmpd_readonly_user_name}
                 snmpd_readonly_user_password: {get_input: snmpd_readonly_user_password}
                 nova::glance_api_servers: {get_input: glance_api_servers}
+                enable_opendaylight: {get_input: enable_opendaylight}
                 neutron::debug: {get_input: debug}
                 neutron::rabbit_password: {get_input: rabbit_password}
                 neutron::rabbit_user: {get_input: rabbit_user}
@@ -412,7 +417,6 @@ resources:
                 neutron_flat_networks: {get_input: neutron_flat_networks}
                 neutron_host: {get_input: neutron_host}
                 neutron::agents::ml2::ovs::local_ip: {get_input: neutron_local_ip}
-
                 neutron_tenant_network_type: {get_input: neutron_tenant_network_type}
                 neutron_tunnel_types: {get_input: neutron_tunnel_types}
                 neutron::plugins::ml2::network_vlan_ranges: {get_input: neutron_network_vlan_ranges}
@@ -447,6 +451,7 @@ resources:
       input_values:
         cinder_enable_nfs_backend: {get_param: CinderEnableNfsBackend}
         debug: {get_param: Debug}
+        enable_opendaylight: {get_param: EnableOpenDaylight}
         nova_compute_driver: {get_param: NovaComputeDriver}
         nova_compute_libvirt_type: {get_param: NovaComputeLibvirtType}
         nova_public_ip: {get_param: NovaPublicIP}

@@ -1,0 +1,4 @@
+# A Heat environment file which can be used to enable Opendaylight
+
+parameter_defaults:
+  EnableOpenDaylight: false

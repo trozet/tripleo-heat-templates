@@ -30,6 +30,15 @@ if hiera('step') >= 1 {
 
 if hiera('step') >= 2 {
 
+  if str2bool(hiera('enable_opendaylight', 'false')) {
+    class {"opendaylight":
+      extra_features => ['odl-base-all', 'odl-aaa-authn', 'odl-restconf',
+                         'odl-nsf-all', 'odl-adsal-northbound', 'odl-mdsal-apidocs',
+                         'odl-ovsdb-openstack', 'odl-ovsdb-northbound', 'odl-dlux-core'],
+      odl_rest_port  => hiera('opendaylight_port'),
+    }
+  }
+
   if count(hiera('ntp::servers')) > 0 {
     include ::ntp
   }
@@ -237,15 +246,60 @@ if hiera('step') >= 3 {
     require => Package['neutron'],
   }
 
-  class { 'neutron::plugins::ml2':
-    flat_networks => split(hiera('neutron_flat_networks'), ','),
-    tenant_network_types => [hiera('neutron_tenant_network_type')],
-    mechanism_drivers   => [hiera('neutron_mechanism_drivers')],
+  if str2bool(hiera('enable_opendaylight', 'false')) {
+
+    class { 'neutron::plugins::ml2':
+      flat_networks => split(hiera('neutron_flat_networks'), ','),
+      tenant_network_types => [hiera('neutron_tenant_network_type')],
+      mechanism_drivers     => ['opendaylight'],
+    }
+
+    $opendaylight_port = hiera('opendaylight_port')
+    $private_ip = hiera('neutron::agents::ml2::ovs::local_ip')
+
+    neutron_plugin_ml2 {
+      'ml2_odl/username':         value => 'admin';
+      'ml2_odl/password':         value => 'admin';
+      'ml2_odl/url':              value => "http://${controller_node_ips[0]}:${opendaylight_port}/controller/nb/v2/neutron";
+    }
+
+    # Need to manually configure physical network mapping here, since we arent using ovs agent
+    $bridge_mappings = split(hiera('neutron_bridge_mappings'), ',')
+    if ($bridge_mappings != []) {
+      $br_map_str = join($bridge_mappings, ',')
+      #update bridge-mappings to physnet1
+      neutron_plugin_ml2 {
+        'ovs/bridge_mappings':    value => "$br_map_str"
+      }
+    }
+
+    # OVS manager
+    exec { 'Set OVS Manager to OpenDaylight':
+      command => "/usr/bin/ovs-vsctl set-manager tcp:${controller_node_ips[0]}:6640",
+      unless  => "/usr/bin/ovs-vsctl show | /usr/bin/grep 'Manager \"tcp:${controller_node_ips[0]}:6640\"'",
+    }
+    # local ip
+    exec { 'Set local_ip Other Option':
+      command => "/usr/bin/ovs-vsctl set Open_vSwitch $(ovs-vsctl get Open_vSwitch . _uuid) other_config:local_ip=$private_ip",
+      unless  => "/usr/bin/ovs-vsctl list Open_vSwitch | /usr/bin/grep 'local_ip=\"$private_ip\"'",
+    }
+
+  } else {
+
+    class { 'neutron::plugins::ml2':
+      flat_networks => split(hiera('neutron_flat_networks'), ','),
+      tenant_network_types => [hiera('neutron_tenant_network_type')],
+      mechanism_drivers   => [hiera('neutron_mechanism_drivers')],
+    }
+
+    class { 'neutron::agents::ml2::ovs':
+      bridge_mappings => split(hiera('neutron_bridge_mappings'), ','),
+      tunnel_types => split(hiera('neutron_tunnel_types'), ','),
+    }
+
+    Service['neutron-server'] -> Service['neutron-ovs-agent-service'] 
   }
-  class { 'neutron::agents::ml2::ovs':
-    bridge_mappings => split(hiera('neutron_bridge_mappings'), ','),
-    tunnel_types => split(hiera('neutron_tunnel_types'), ','),
-  }
+
   if 'cisco_n1kv' in hiera('neutron_mechanism_drivers') {
     include neutron::plugins::ml2::cisco::nexus1000v
 
@@ -281,7 +335,6 @@ if hiera('step') >= 3 {
 
   Service['neutron-server'] -> Service['neutron-dhcp-service']
   Service['neutron-server'] -> Service['neutron-l3']
-  Service['neutron-server'] -> Service['neutron-ovs-agent-service']
   Service['neutron-server'] -> Service['neutron-metadata']
 
   include ::cinder

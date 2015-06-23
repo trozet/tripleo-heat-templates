@@ -109,6 +109,10 @@ parameters:
     default: true
     description: Whether to enable Swift Storage on the Controller
     type: boolean
+  EnableOpenDaylight:
+    default: false
+    description: Whether to enable Opendaylight Controller
+    type: boolean
   ExtraConfig:
     default: {}
     description: |
@@ -451,6 +455,10 @@ parameters:
   NtpServer:
     type: string
     default: ''
+  OpenDaylightPort:
+    default: 8081
+    description: Set opendaylight service port
+    type: number
   PcsdPassword:
     type: string
     description: The password for the 'pcsd' user.
@@ -813,6 +821,7 @@ resources:
         enable_fencing: {get_param: EnableFencing}
         enable_galera: {get_param: EnableGalera}
         enable_ceph_storage: {get_param: EnableCephStorage}
+        enable_opendaylight: {get_param: EnableOpenDaylight}
         enable_swift_storage: {get_param: EnableSwiftStorage}
         mysql_innodb_buffer_pool_size: {get_param: MysqlInnodbBufferPoolSize}
         mysql_max_connections: {get_param: MysqlMaxConnections}
@@ -822,6 +831,7 @@ resources:
             template: tripleo-CLUSTER
             params:
               CLUSTER: {get_param: MysqlClusterUniquePart}
+        opendaylight_port: {get_param: OpenDaylightPort}
         neutron_flat_networks: {get_param: NeutronFlatNetworks}
         neutron_metadata_proxy_shared_secret: {get_param: NeutronMetadataProxySharedSecret}
         neutron_agent_mode: {get_param: NeutronAgentMode}
@@ -1169,6 +1179,10 @@ resources:
                 mysql_cluster_name: {get_input: mysql_cluster_name}
                 mysql_bind_host: {get_input: mysql_network}
                 mysql_virtual_ip: {get_input: mysql_virtual_ip}
+
+                # OpenDaylight
+                enable_opendaylight: {get_input: enable_opendaylight}
+                opendaylight_port: {get_input: opendaylight_port}
 
                 # Neutron
                 neutron::bind_host: {get_input: neutron_api_network}
