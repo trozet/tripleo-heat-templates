@@ -13,16 +13,7 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-if !str2bool(hiera('enable_package_install', 'false')) {
-  case $::osfamily {
-    'RedHat': {
-      Package { provider => 'norpm' } # provided by tripleo-puppet
-    }
-    default: {
-      warning('enable_package_install option not supported.')
-    }
-  }
-}
+include tripleo::packages
 
 if hiera('step') >= 1 {
 
@@ -90,73 +81,23 @@ if hiera('step') >= 2 {
     override_options => {
       'mysqld' => {
         'bind-address' => hiera('mysql_bind_host'),
-        'max_connections' => '1024',
+        'max_connections' => hiera('mysql_max_connections'),
         'open_files_limit' => '-1',
       },
-    }
+    },
+    remove_default_accounts => true,
   }
 
   # FIXME: this should only occur on the bootstrap host (ditto for db syncs)
   # Create all the database schemas
-  # Example DSN format: mysql://user:password@host/dbname
-  $allowed_hosts = ['%',hiera('mysql_bind_host')]
-  $keystone_dsn = split(hiera('keystone::database_connection'), '[@:/?]')
-  class { 'keystone::db::mysql':
-    user          => $keystone_dsn[3],
-    password      => $keystone_dsn[4],
-    host          => $keystone_dsn[5],
-    dbname        => $keystone_dsn[6],
-    allowed_hosts => $allowed_hosts,
-  }
-  $glance_dsn = split(hiera('glance::api::database_connection'), '[@:/?]')
-  class { 'glance::db::mysql':
-    user          => $glance_dsn[3],
-    password      => $glance_dsn[4],
-    host          => $glance_dsn[5],
-    dbname        => $glance_dsn[6],
-    allowed_hosts => $allowed_hosts,
-  }
-  $nova_dsn = split(hiera('nova::database_connection'), '[@:/?]')
-  class { 'nova::db::mysql':
-    user          => $nova_dsn[3],
-    password      => $nova_dsn[4],
-    host          => $nova_dsn[5],
-    dbname        => $nova_dsn[6],
-    allowed_hosts => $allowed_hosts,
-  }
-  $neutron_dsn = split(hiera('neutron::server::database_connection'), '[@:/?]')
-  class { 'neutron::db::mysql':
-    user          => $neutron_dsn[3],
-    password      => $neutron_dsn[4],
-    host          => $neutron_dsn[5],
-    dbname        => $neutron_dsn[6],
-    allowed_hosts => $allowed_hosts,
-  }
-  $cinder_dsn = split(hiera('cinder::database_connection'), '[@:/?]')
-  class { 'cinder::db::mysql':
-    user          => $cinder_dsn[3],
-    password      => $cinder_dsn[4],
-    host          => $cinder_dsn[5],
-    dbname        => $cinder_dsn[6],
-    allowed_hosts => $allowed_hosts,
-  }
-  $heat_dsn = split(hiera('heat::database_connection'), '[@:/?]')
-  class { 'heat::db::mysql':
-    user          => $heat_dsn[3],
-    password      => $heat_dsn[4],
-    host          => $heat_dsn[5],
-    dbname        => $heat_dsn[6],
-    allowed_hosts => $allowed_hosts,
-  }
+  include ::keystone::db::mysql
+  include ::glance::db::mysql
+  include ::nova::db::mysql
+  include ::neutron::db::mysql
+  include ::cinder::db::mysql
+  include ::heat::db::mysql
   if downcase(hiera('ceilometer_backend')) == 'mysql' {
-    $ceilometer_dsn = split(hiera('ceilometer_mysql_conn_string'), '[@:/?]')
-    class { 'ceilometer::db::mysql':
-      user          => $ceilometer_dsn[3],
-      password      => $ceilometer_dsn[4],
-      host          => $ceilometer_dsn[5],
-      dbname        => $ceilometer_dsn[6],
-      allowed_hosts => $allowed_hosts,
-    }
+    include ::ceilometer::db::mysql
   }
 
   $rabbit_nodes = hiera('rabbit_node_ips')
@@ -182,8 +123,7 @@ if hiera('step') >= 2 {
   # pre-install swift here so we can build rings
   include ::swift
 
-  $cinder_enable_rbd_backend = hiera('cinder_enable_rbd_backend', false)
-  $enable_ceph = $cinder_enable_rbd_backend
+  $enable_ceph = hiera('ceph_storage_count', 0) > 0
 
   if $enable_ceph {
     class { 'ceph::profile::params':
@@ -193,8 +133,25 @@ if hiera('step') >= 2 {
   }
 
   if str2bool(hiera('enable_ceph_storage', 'false')) {
-    include ::ceph::profile::client
+    if str2bool(hiera('ceph_osd_selinux_permissive', true)) {
+      exec { 'set selinux to permissive on boot':
+        command => "sed -ie 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config",
+        onlyif  => "test -f /etc/selinux/config && ! grep '^SELINUX=permissive' /etc/selinux/config",
+        path    => ["/usr/bin", "/usr/sbin"],
+      }
+
+      exec { 'set selinux to permissive':
+        command => "setenforce 0",
+        onlyif  => "which setenforce && getenforce | grep -i 'enforcing'",
+        path    => ["/usr/bin", "/usr/sbin"],
+      } -> Class['ceph::profile::osd']
+    }
+
     include ::ceph::profile::osd
+  }
+
+  if str2bool(hiera('enable_external_ceph', 'false')) {
+    include ::ceph::profile::client
   }
 
 } #END STEP 2
@@ -237,21 +194,26 @@ if hiera('step') >= 3 {
 
   $glance_backend = downcase(hiera('glance_backend', 'swift'))
   case $glance_backend {
-      swift: { $glance_store = 'glance.store.swift.Store' }
-      file: { $glance_store = 'glance.store.filesystem.Store' }
-      rbd: { $glance_store = 'glance.store.rbd.Store' }
+      swift: { $backend_store = 'glance.store.swift.Store' }
+      file: { $backend_store = 'glance.store.filesystem.Store' }
+      rbd: { $backend_store = 'glance.store.rbd.Store' }
       default: { fail('Unrecognized glance_backend parameter.') }
   }
+  $http_store = ['glance.store.http.Store']
+  $glance_store = concat($http_store, $backend_store)
 
   # TODO: notifications, scrubber, etc.
   include ::glance
   class { 'glance::api':
-    known_stores => [$glance_store]
+    known_stores => $glance_store
   }
   include ::glance::registry
   include join(['::glance::backend::', $glance_backend])
 
-  include ::nova
+  class { '::nova' :
+    memcached_servers => suffix(hiera('memcache_node_ips'), ':11211'),
+  }
+  include ::nova::config
   include ::nova::api
   include ::nova::cert
   include ::nova::conductor
@@ -259,6 +221,7 @@ if hiera('step') >= 3 {
   include ::nova::network::neutron
   include ::nova::vncproxy
   include ::nova::scheduler
+  include ::nova::scheduler::filter
 
   include ::neutron
   include ::neutron::server
@@ -277,10 +240,43 @@ if hiera('step') >= 3 {
   class { 'neutron::plugins::ml2':
     flat_networks => split(hiera('neutron_flat_networks'), ','),
     tenant_network_types => [hiera('neutron_tenant_network_type')],
+    mechanism_drivers   => [hiera('neutron_mechanism_drivers')],
   }
   class { 'neutron::agents::ml2::ovs':
     bridge_mappings => split(hiera('neutron_bridge_mappings'), ','),
     tunnel_types => split(hiera('neutron_tunnel_types'), ','),
+  }
+  if 'cisco_n1kv' in hiera('neutron_mechanism_drivers') {
+    include neutron::plugins::ml2::cisco::nexus1000v
+
+    class { 'neutron::agents::n1kv_vem':
+      n1kv_source          => hiera('n1kv_vem_source', undef),
+      n1kv_version         => hiera('n1kv_vem_version', undef),
+    }
+
+    class { 'n1k_vsm':
+      n1kv_source       => hiera('n1kv_vsm_source', undef),
+      n1kv_version      => hiera('n1kv_vsm_version', undef),
+      pacemaker_control => false,
+    }
+  }
+
+  if 'cisco_ucsm' in hiera('neutron_mechanism_drivers') {
+    include ::neutron::plugins::ml2::cisco::ucsm
+  }
+  if 'cisco_nexus' in hiera('neutron_mechanism_drivers') {
+    include ::neutron::plugins::ml2::cisco::nexus
+    include ::neutron::plugins::ml2::cisco::type_nexus_vxlan
+  }
+
+  if hiera('neutron_enable_bigswitch_ml2', false) {
+    include neutron::plugins::ml2::bigswitch::restproxy
+  }
+  neutron_l3_agent_config {
+    'DEFAULT/ovs_use_veth': value => hiera('neutron_ovs_use_veth', false);
+  }
+  neutron_dhcp_agent_config {
+    'DEFAULT/ovs_use_veth': value => hiera('neutron_ovs_use_veth', false);
   }
 
   Service['neutron-server'] -> Service['neutron-dhcp-service']
@@ -317,20 +313,21 @@ if hiera('step') >= 3 {
 
     $ceph_pools = hiera('ceph_pools')
     ceph::pool { $ceph_pools : }
+
+    $cinder_pool_requires = [Ceph::Pool['volumes']]
+
+  } else {
+    $cinder_pool_requires = []
   }
 
-  if $cinder_enable_rbd_backend {
+  if hiera('cinder_enable_rbd_backend', false) {
     $cinder_rbd_backend = 'tripleo_ceph'
-
-    cinder_config {
-      "${cinder_rbd_backend}/host": value => 'hostgroup';
-    }
 
     cinder::backend::rbd { $cinder_rbd_backend :
       rbd_pool        => 'volumes',
       rbd_user        => 'openstack',
       rbd_secret_uuid => hiera('ceph::profile::params::fsid'),
-      require         => Ceph::Pool['volumes'],
+      require         => $cinder_pool_requires,
     }
   }
 
@@ -341,16 +338,53 @@ if hiera('step') >= 3 {
       "${cinder_netapp_backend}/host": value => 'hostgroup';
     }
 
-    if hiera('cinder_netapp_nfs_shares', undef) {
-      $cinder_netapp_nfs_shares = split(hiera('cinder_netapp_nfs_shares', undef), ',')
+    if hiera('cinder::backend::netapp::nfs_shares', undef) {
+      $cinder_netapp_nfs_shares = split(hiera('cinder::backend::netapp::nfs_shares', undef), ',')
     }
 
     cinder::backend::netapp { $cinder_netapp_backend :
-      nfs_shares => $cinder_netapp_nfs_shares,
+      netapp_login                 => hiera('cinder::backend::netapp::netapp_login', undef),
+      netapp_password              => hiera('cinder::backend::netapp::netapp_password', undef),
+      netapp_server_hostname       => hiera('cinder::backend::netapp::netapp_server_hostname', undef),
+      netapp_server_port           => hiera('cinder::backend::netapp::netapp_server_port', undef),
+      netapp_size_multiplier       => hiera('cinder::backend::netapp::netapp_size_multiplier', undef),
+      netapp_storage_family        => hiera('cinder::backend::netapp::netapp_storage_family', undef),
+      netapp_storage_protocol      => hiera('cinder::backend::netapp::netapp_storage_protocol', undef),
+      netapp_transport_type        => hiera('cinder::backend::netapp::netapp_transport_type', undef),
+      netapp_vfiler                => hiera('cinder::backend::netapp::netapp_vfiler', undef),
+      netapp_volume_list           => hiera('cinder::backend::netapp::netapp_volume_list', undef),
+      netapp_vserver               => hiera('cinder::backend::netapp::netapp_vserver', undef),
+      netapp_partner_backend_name  => hiera('cinder::backend::netapp::netapp_partner_backend_name', undef),
+      nfs_shares                   => $cinder_netapp_nfs_shares,
+      nfs_shares_config            => hiera('cinder::backend::netapp::nfs_shares_config', undef),
+      netapp_copyoffload_tool_path => hiera('cinder::backend::netapp::netapp_copyoffload_tool_path', undef),
+      netapp_controller_ips        => hiera('cinder::backend::netapp::netapp_controller_ips', undef),
+      netapp_sa_password           => hiera('cinder::backend::netapp::netapp_sa_password', undef),
+      netapp_storage_pools         => hiera('cinder::backend::netapp::netapp_storage_pools', undef),
+      netapp_eseries_host_type     => hiera('cinder::backend::netapp::netapp_eseries_host_type', undef),
+      netapp_webservice_path       => hiera('cinder::backend::netapp::netapp_webservice_path', undef),
     }
   }
 
-  $cinder_enabled_backends = delete_undef_values([$cinder_iscsi_backend, $cinder_rbd_backend, $cinder_netapp_backend])
+  if hiera('cinder_enable_nfs_backend', false) {
+    $cinder_nfs_backend = 'tripleo_nfs'
+
+    if ($::selinux != "false") {
+      selboolean { 'virt_use_nfs':
+          value => on,
+          persistent => true,
+      } -> Package['nfs-utils']
+    }
+
+    package {'nfs-utils': } ->
+    cinder::backend::nfs { $cinder_nfs_backend :
+      nfs_servers         => hiera('cinder_nfs_servers'),
+      nfs_mount_options   => hiera('cinder_nfs_mount_options'),
+      nfs_shares_config   => '/etc/cinder/shares-nfs.conf',
+    }
+  }
+
+  $cinder_enabled_backends = delete_undef_values([$cinder_iscsi_backend, $cinder_rbd_backend, $cinder_netapp_backend, $cinder_nfs_backend])
   class { '::cinder::backends' :
     enabled_backends => $cinder_enabled_backends,
   }
@@ -364,7 +398,6 @@ if hiera('step') >= 3 {
   include ::swift::proxy::keystone
   include ::swift::proxy::authtoken
   include ::swift::proxy::staticweb
-  include ::swift::proxy::ceilometer
   include ::swift::proxy::ratelimit
   include ::swift::proxy::catch_errors
   include ::swift::proxy::tempurl
@@ -399,6 +432,7 @@ if hiera('step') >= 3 {
     }
   }
   include ::ceilometer
+  include ::ceilometer::config
   include ::ceilometer::api
   include ::ceilometer::agent::notification
   include ::ceilometer::agent::central
@@ -421,10 +455,15 @@ if hiera('step') >= 3 {
   include ::heat::engine
 
   # Horizon
-  $vhost_params = { add_listen => false }
+  if 'cisco_n1kv' in hiera('neutron_mechanism_drivers') {
+    $_profile_support = 'cisco'
+  } else {
+    $_profile_support = 'None'
+  }
+  $neutron_options   = {'profile_support' => $_profile_support }
   class { 'horizon':
     cache_server_ip    => hiera('memcache_node_ips', '127.0.0.1'),
-    vhost_extra_params => $vhost_params,
+    neutron_options    => $neutron_options,
   }
 
   $snmpd_user = hiera('snmpd_readonly_user_name')
@@ -437,4 +476,13 @@ if hiera('step') >= 3 {
     snmpd_config => [ join(['rouser ', hiera('snmpd_readonly_user_name')]), 'proc  cron', 'includeAllDisks  10%', 'master agentx', 'trapsink localhost public', 'iquerySecName internalUser', 'rouser internalUser', 'defaultMonitors yes', 'linkUpDownNotifications yes' ],
   }
 
+  hiera_include('controller_classes')
+
 } #END STEP 3
+
+if hiera('step') >= 4 {
+  include ::keystone::cron::token_flush
+} #END STEP 4
+
+$package_manifest_name = join(['/var/lib/tripleo/installed-packages/overcloud_controller', hiera('step')])
+package_manifest{$package_manifest_name: ensure => present}

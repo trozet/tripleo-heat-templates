@@ -13,15 +13,7 @@ nova::network::neutron::vif_plugging_is_fatal: false
 nova::network::neutron::vif_plugging_timeout: 30
 nova::network::neutron::dhcp_domain: ''
 
-neutron::plugins::ml2::tunnel_id_ranges:
-  - '1:1000'
-neutron::plugins::ml2::vni_ranges:
-  - '1:1000'
-neutron::plugins::ml2::type_drivers:
-  - flat
-  - gre
-  - vxlan
-  - vlan
+neutron::allow_overlapping_ips: true
 
 sysctl_settings:
   net.ipv4.tcp_keepalive_intvl:
@@ -30,3 +22,12 @@ sysctl_settings:
     value: 5
   net.ipv4.tcp_keepalive_time:
     value: 5
+
+nova::rabbit_heartbeat_timeout_threshold: 60
+neutron::rabbit_heartbeat_timeout_threshold: 60
+cinder::rabbit_heartbeat_timeout_threshold: 60
+ceilometer::rabbit_heartbeat_timeout_threshold: 60
+heat::rabbit_heartbeat_timeout_threshold: 60
+keystone::rabbit_heartbeat_timeout_threshold: 60
+
+nova::cinder_catalog_info: 'volumev2:cinderv2:internalURL'
